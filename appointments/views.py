@@ -4,7 +4,7 @@ from datetime import date
 
 from .models import Appointment
 from .serializers import AppointmentSerializer
-from .utils import generate_token
+from .utils import generate_token, calculate_estimated_wait
 
 
 # -----------------------------
@@ -14,18 +14,22 @@ from .utils import generate_token
 def book_appointment(request):
     data = request.data
 
+    estimated_wait = calculate_estimated_wait()
+
     appointment = Appointment.objects.create(
         name=data.get('name'),
         phone=data.get('phone'),
         date=data.get('date'),
         time_slot=data.get('time_slot'),
         token=generate_token(),
-        status='waiting'
+        status='waiting',
+        estimated_wait=estimated_wait
     )
 
     return Response({
         "message": "Appointment booked successfully",
-        "appointment": AppointmentSerializer(appointment).data
+        "token": appointment.token,
+        "estimated_wait": estimated_wait
     })
 
 
@@ -59,7 +63,7 @@ def queue_status(request):
 def call_next(request):
     today = date.today()
 
-    # Complete current serving
+    # Complete current
     current = Appointment.objects.filter(
         date=today,
         status='serving'
@@ -69,7 +73,7 @@ def call_next(request):
         current.status = 'completed'
         current.save()
 
-    # Serve next waiting
+    # Serve next
     next_appt = Appointment.objects.filter(
         date=today,
         status='waiting'
@@ -77,13 +81,25 @@ def call_next(request):
 
     if next_appt:
         next_appt.status = 'serving'
+        next_appt.estimated_wait = 0
         next_appt.save()
+
+        # Update wait for remaining queue
+        queue = Appointment.objects.filter(
+            date=today,
+            status='waiting'
+        ).order_by('created_at')
+
+        for index, appt in enumerate(queue):
+            appt.estimated_wait = (index + 1) * 5
+            appt.save()
+
         return Response({
             "message": f"Token {next_appt.token} is now being served"
         })
 
     return Response({
-        "message": "No appointments left in queue"
+        "message": "No appointments left"
     })
 
 
@@ -93,8 +109,18 @@ def call_next(request):
 @api_view(['POST'])
 def add_delay(request):
     delay = int(request.data.get('delay', 0))
+    today = date.today()
+
+    queue = Appointment.objects.filter(
+        date=today,
+        status='waiting'
+    ).order_by('created_at')
+
+    for appt in queue:
+        appt.estimated_wait += delay
+        appt.save()
 
     return Response({
-        "message": f"Delay of {delay} minutes applied to queue",
+        "message": f"Delay of {delay} minutes applied",
         "delay_added": delay
     })
